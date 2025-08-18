@@ -4,7 +4,7 @@ function Transliterate(s, t)
         local c = s:sub(i, i)
         if t[c] then
             result = result .. t[c]
-        else
+        elseif t[c] == nil then
             result = result .. c
         end
     end
@@ -13,11 +13,11 @@ end
 
 Sample = "Hello, world!"
 print(Transliterate(Sample, {
-    ["H"] = "A",
-    ["e"] = "B",
-    ["l"] = "C",
-    ["o"] = "D",
-    [","] = "E",
-    [" "] = "F",
-    ["w"] = "G",
+    ["H"] = "H",
+    ["e"] = "e",
+    ["l"] = "y",
+    ["o"] = false,
+    [","] = "B",
+    [" "] = "r",
+    ["w"] = "s",
 }))

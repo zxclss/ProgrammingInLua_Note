@@ -221,7 +221,7 @@ function Transliterate(s, t)
         local c = s:sub(i, i)
         if t[c] then
             result = result .. t[c]
-        else
+        elseif t[c] == nil then
             result = result .. c
         end
     end
