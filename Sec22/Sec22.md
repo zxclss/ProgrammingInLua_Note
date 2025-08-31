@@ -4,218 +4,146 @@
 
 **具有动态名称的全局变量**
 
-在Lua中，全局变量实际上存储在一个叫做环境的表中。我们可以使用动态的方式来访问和操作这些全局变量：
+- 在 Lua 5.2+，每个 chunk/函数都在一个“环境表”中运行；所有“全局变量”其实是对该表的字段访问。默认环境是 `_G`。
+- 通过字符串构造（如 "a.b.c"）按需读取/写入，可把路径拆分后在环境表上逐级索引。
 
 ```lua
--- 直接访问全局变量
-var = "hello"
-print(var)  -- "hello"
-
--- 通过_G表动态访问
-_G["var"] = "world"
-print(var)  -- "world"
-
--- 动态访问不存在的变量
-varname = "nonexistent"
-print(_G[varname])  -- nil
-
--- 动态创建全局变量
-varname = "dynamic_var"
-_G[varname] = 42
-print(dynamic_var)  -- 42
-
--- 遍历所有全局变量
-for name, value in pairs(_G) do
-    print(name, value)
+-- 读取：从 root（默认 _G）取以点号分隔的路径
+local function getfield(path, root)
+  local v = root or _G
+  for name in string.gmatch(path, "[%a_][%w_]*") do
+    v = v[name]
+    if v == nil then return nil end
+  end
+  return v
 end
+
+-- 写入：必要时创建中间表
+local function setfield(path, value, root)
+  local t = root or _G
+  local last
+  for name in string.gmatch(path, "([%a_][%w_]*)%.?") do
+    if last then
+      t[last] = t[last] or {}
+      t = t[last]
+    end
+    last = name
+  end
+  t[last] = value
+end
+
+setfield("pkg.sub.answer", 42)
+print(getfield("pkg.sub.answer")) -- 42
 ```
+
+- 若要绕过元方法，使用 `rawget/rawset` 访问表字段。
 
 **全局变量的声明**
 
-- 在Lua中，未使用`local`关键字声明的变量默认为全局变量
-- 全局变量存储在全局环境表`_G`中
-- `_G`表包含对自身的引用：`_G._G == _G`
+- 未声明直接赋值会写入当前 `_ENV`：`x = 10` 等价于 `_ENV.x = 10`。易因拼写错误引入隐式全局。
+- 最佳实践：
+  - 始终用 `local` 声明新名字。
+  - 仅在极少数需要暴露为全局时，显式写入 `_G`（或用 `rawset(_G, "NAME", v)`）。
 
 ```lua
--- 全局变量声明
-x = 10               -- 全局变量
-_G.y = 20           -- 等价的全局变量声明
-_G["z"] = 30        -- 使用字符串索引的全局变量
+-- 简单“strict”全局：禁止读/写未声明的全局
+setmetatable(_G, {
+  __newindex = function(_, k, v)
+    error("attempt to create global '" .. tostring(k) .."'", 2)
+  end,
+  __index = function(_, k)
+    error("attempt to read undeclared global '" .. tostring(k) .."'", 2)
+  end
+})
 
--- 检查变量是否存在
-if _G["some_var"] then
-    print("Variable exists")
-end
-
--- 安全地获取全局变量的值
-function getGlobal(name, default)
-    return _G[name] or default
-end
-
-print(getGlobal("undefined_var", "default_value"))  -- "default_value"
+-- 显式创建全局（绕过 strict）
+rawset(_G, "APP_VERSION", "1.0.0")
 ```
 
 **非全局环境**
 
-Lua允许为函数设置不同的环境，使函数在执行时使用自定义的变量查找表：
+- 通过自定义环境表可以隔离、限制或定制名字解析，实现沙箱或命名空间。
+- 常见做法：让新环境“只暴露需要的 API”，并通过 `__index = _G` 回退到标准库（或完全禁止回退）。
 
 ```lua
--- 创建自定义环境
-local myenv = {
-    print = print,  -- 保留原有的print函数
-    x = 100,
-    y = 200
+-- 受限沙箱：只允许 print 与部分 math
+local sandbox = {
+  print = print,
+  math = { abs = math.abs, max = math.max }
 }
+setmetatable(sandbox, {
+  __index = function(_, k) error("access to global '" .. k .. "' denied", 2) end
+})
 
--- 在自定义环境中执行代码
-local function test()
-    print("x + y =", x + y)  -- 将使用myenv中的x和y
-end
+local code = [[
+  print(math.abs(-3))
+  return (unknown or 0) + 1 -- 触发错误：unknown 不可访问
+]]
 
--- 设置函数环境（Lua 5.2+的方式）
-debug.setupvalue(test, 1, myenv)
-test()  -- 输出: x + y = 300
-
--- 另一种方式：在代码中直接设置_ENV
-local function test_with_env()
-    local _ENV = myenv
-    print("x * y =", x * y)  -- 使用myenv中的变量
-end
-test_with_env()  -- 输出: x * y = 20000
+local f = load(code, "sandbox", "t", sandbox)
+print(pcall(f)) -- false  错误信息
 ```
+
+- 若需要保留标准库，可用：`setmetatable(env, { __index = _G })`。
 
 **使用 _ENV**
 
-`_ENV`是Lua 5.2+中引入的特殊变量，用于控制环境：
+- `_ENV` 是一个普通上值；编译器会把对自由名字 `a` 的访问重写为 `_ENV.a`。
+- 通过在块内创建新的 `_ENV`，可为该块及其中定义的函数设定词法环境。
 
 ```lua
--- _ENV的基本使用
-local originalEnv = _ENV
-
--- 创建新环境
-local myEnv = {
-    print = print,
-    tostring = tostring,
-    message = "Hello from custom environment!"
-}
-
--- 切换到新环境
-local _ENV = myEnv
-print(message)  -- 输出: Hello from custom environment!
-
--- 恢复原环境
-_ENV = originalEnv
-
--- 使用元表实现环境继承
-local function createSandbox()
-    local sandbox = {}
-    setmetatable(sandbox, {__index = _G})  -- 继承全局环境
-    return sandbox
+local print = print -- 把常用全局提前缓存为局部
+do
+  local _ENV = setmetatable({ x = 10, print = print }, { __index = _G })
+  function show() print(x) end   -- 等价于 _ENV.print(_ENV.x)
+  x = x + 1
+  show() -- 11
 end
-
-local sandbox = createSandbox()
-sandbox.safeVar = "This is safe"
-
--- 在沙盒环境中执行代码
-local code = [[
-    print("Safe variable:", safeVar)
-    -- 仍可访问全局函数，但新变量只在沙盒中
-    newVar = "Only in sandbox"
-]]
-
-local func = load(code, "sandbox", "t", sandbox)
-func()
 ```
+
+- 给函数显式传入 `_ENV` 也是一种模式（见练习 22.3），可让同一函数在不同环境下运行。
 
 **环境和模块**
 
-环境在模块系统中扮演重要角色，可以用来创建模块的私有空间：
+- 推荐的模块写法：返回一个表；可用 `_ENV` 把模块内“全局”定向到该表。
+- 如需自动继承标准库，可以给模块表设置 `__index = _G`。
 
 ```lua
--- 模块示例：使用环境隔离
+-- mymath.lua
 local M = {}
-local _ENV = M  -- 将模块表设为环境
+setmetatable(M, { __index = _G }) -- 可选：继承标准库
+local _ENV = M                    -- 之后的“全局”都写入 M
 
--- 现在所有的"全局"变量都会进入M表中
-version = "1.0"
-author = "Lua Developer"
+pi = 3.141592653589793
+function add(x, y) return x + y end
+function area(r) return pi * r * r end
 
-function greet(name)
-    return "Hello, " .. name .. "!"
-end
-
-function getInfo()
-    return "Module version: " .. version .. ", by " .. author
-end
-
--- 将模块暴露给外部
 return M
 
--- 使用模块
--- local mymodule = require("mymodule")
--- print(mymodule.greet("World"))  -- "Hello, World!"
--- print(mymodule.getInfo())       -- "Module version: 1.0, by Lua Developer"
+-- 使用
+-- local mymath = require "mymath"
+-- print(mymath.add(1, 2), mymath.pi)
 ```
+
+- 不再推荐使用旧的 `module(...)`（在新版本中已移除/弃用）。
 
 **_ENV和load**
 
-`load`函数可以接受环境参数，控制加载代码的执行环境：
+- `load(chunk [, chunkname [, mode [, env]]])` 会返回一个函数；若提供 `env`，该函数在此环境中运行，其 `_ENV` 上值被设为 `env`。
+- 典型用法：为动态代码提供隔离/定制的环境。
 
 ```lua
--- 基本的load使用
-local code = "return x + y"
+-- 独立环境，不影响全局 _G
+local f = load("x = x + 1; return x", "inc", "t", { x = 41, print = print })
+print(f()) -- 42
 
--- 为代码提供环境
-local env = {x = 10, y = 20}
-local func = load(code, "chunk", "t", env)
-print(func())  -- 30
-
--- 安全的代码执行环境
-local safeEnv = {
-    print = print,
-    tostring = tostring,
-    tonumber = tonumber,
-    type = type,
-    pairs = pairs,
-    ipairs = pairs,
-    -- 不包含io、os等危险函数
-}
-
--- 加载用户代码到安全环境
-local userCode = [[
-    print("User code executing safely")
-    -- io.open() -- 这会出错，因为io不在环境中
-]]
-
-local safeFunc, err = load(userCode, "user", "t", safeEnv)
-if safeFunc then
-    safeFunc()
-else
-    print("Error:", err)
-end
-
--- 动态环境修改
-local dynamicEnv = {}
-setmetatable(dynamicEnv, {
-    __index = function(t, k)
-        print("Accessing:", k)
-        return _G[k]  -- 转发到全局环境
-    end,
-    __newindex = function(t, k, v)
-        print("Setting:", k, "=", v)
-        rawset(t, k, v)  -- 存储在当前环境
-    end
-})
-
-local dynamicCode = [[
-    x = 42        -- 触发__newindex
-    print(x)      -- 触发__index（如果x不在dynamicEnv中）
-    print(type)   -- 触发__index，获取全局type函数
-]]
-
-local dynamicFunc = load(dynamicCode, "dynamic", "t", dynamicEnv)
-dynamicFunc()
+-- 带回退到标准库
+local env = setmetatable({ x = 10 }, { __index = _G })
+local g = load("print(x, type(math), math.pi)", "demo", "t", env)
+g() -- 10 table 3.141592653589793
 ```
+
+- `loadfile` 与 `load` 一样可指定 `env`；`dofile` 则直接在当前全局环境运行。
 
 ### 练习
 
