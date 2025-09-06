@@ -85,23 +85,14 @@ end
 练习 6.5
 
 ```lua
-local function returnExcept1st(t)
-    local res = {}
-    for i = 2, #t do
-        res[i-1] = t[i]
-    end
-    return res
-end
-
 local function calCombination(t)
-
-    if #t < 2 then
-        return t
+    if #t < 1 then
+        return {""}
     end
-    local res = calCombination(returnExcept1st(t))
-
+    local first = table.remove(t, 1)
+    local res = calCombination(t)
     for i = 1, #res do
-        table.insert(res, t[1]..res[i])
+        table.insert(res, first..res[i])
     end
     return res
 end
@@ -111,7 +102,6 @@ for _, v in ipairs(res) do
     io.write(v .. " ")
 end
 print()
-
 ```
 
 练习 6.6

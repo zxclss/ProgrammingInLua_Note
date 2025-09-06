@@ -138,12 +138,339 @@ emit("data", 42)
 
 练习 24.1
 
+```lua
+function send(x, prod)
+    coroutine.resume(prod, x)
+end
+
+function receive()
+    return coroutine.yield()
+end
+
+function consumer()
+    return coroutine.create(function (x)
+        while true do
+            io.write(x, "\n")
+            x = receive()
+        end
+    end)
+end
+
+function producer(prod)
+    while true do
+        local x = io.read()
+        send(x, prod)
+    end
+end
+
+producer(consumer())
+```
+
 练习 24.2
+
+```lua
+local function printResult(t)
+    for i = 1, #t do
+        io.write(t[i], " ")
+    end
+    io.write("\n")
+end
+
+local function helper(arr, idx, res)
+    if idx > #arr then
+        coroutine.yield(res)
+        return
+    end
+    helper(arr, idx + 1, res)
+    table.insert(res, arr[idx])
+    helper(arr, idx + 1, res)
+    table.remove(res)
+end
+local function combinations(arr)
+    local co = coroutine.create(
+        function()
+            helper(arr, 1, {})
+        end
+    )
+    return function()
+        local status, value = coroutine.resume(co)
+        return status and value or nil
+    end
+end
+
+for c in combinations({"a", "b", "c"}) do
+    printResult(c)
+end
+```
 
 练习 24.3
 
+```lua
+local putline_callbacks = setmetatable({}, { __mode = "k" })
+local getline_callbacks = setmetatable({}, { __mode = "k" })
+
+function putline (stream, line)
+    local co = coroutine.running()
+    local callback = putline_callbacks[co]
+    if not callback then
+        callback = function () coroutine.resume(co) end
+        putline_callbacks[co] = callback
+    end
+    lib.writeline(stream, line, callback)
+    coroutine.yield()
+end
+
+function getline (stream, line)
+    local co = coroutine.running()
+    local callback = getline_callbacks[co]
+    if not callback then
+        callback = function (l) coroutine.resume(co, l) end
+        getline_callbacks[co] = callback
+    end
+    lib.readline(stream, callback)
+    local line = coroutine.yield()
+    return line
+end
+```
+
 练习 24.4
+
+```lua
+local lib = require "async-lib"
+
+function run (code)
+    local co = coroutine.wrap(function()
+        code()
+        lib.stop()
+    end)
+    co()
+    lib.runloop()
+end
+
+local putline_callbacks = setmetatable({}, { __mode = "k" })
+local getline_callbacks = setmetatable({}, { __mode = "k" })
+
+function putline (stream, line)
+    local co = coroutine.running()
+    local callback = putline_callbacks[co]
+    if not callback then
+        callback = function () coroutine.resume(co) end
+        putline_callbacks[co] = callback
+    end
+    lib.writeline(stream, line, callback)
+    coroutine.yield()
+end
+
+function getline (stream, line)
+    local co = coroutine.running()
+    local callback = getline_callbacks[co]
+    if not callback then
+        callback = function (l) coroutine.resume(co, l) end
+        getline_callbacks[co] = callback
+    end
+    lib.readline(stream, callback)
+    local line = coroutine.yield()
+    return line
+end
+
+-- Iterator that yields lines from a stream using getline
+function lines (stream)
+    return function ()
+        return getline(stream)
+    end
+end
+
+run(function ()
+    local t = {}
+    local inp = io.input()
+    local out = io.output()
+
+    for line in lines(inp) do
+        t[#t + 1] = line
+    end
+
+    for i = #t, 1, -1 do
+        putline(out, t[i] .. "\n")
+    end    
+end)
+```
 
 练习 24.5
 
+```lua
+local lib = require "async-lib"
+
+local running_tasks = 0
+
+local function on_task_finished()
+    running_tasks = running_tasks - 1
+    if running_tasks == 0 then
+        lib.stop()
+    end
+end
+
+function spawn (code)
+    running_tasks = running_tasks + 1
+    local co = coroutine.wrap(function()
+        code()
+        on_task_finished()
+    end)
+    co()
+    return co
+end
+
+function run (code)
+    running_tasks = 0
+    spawn(code)
+    lib.runloop()
+end
+
+function run_all (codes)
+    running_tasks = 0
+    for _, fn in ipairs(codes) do
+        spawn(fn)
+    end
+    lib.runloop()
+end
+
+local putline_callbacks = setmetatable({}, { __mode = "k" })
+local getline_callbacks = setmetatable({}, { __mode = "k" })
+
+function putline (stream, line)
+    local co = coroutine.running()
+    local callback = putline_callbacks[co]
+    if not callback then
+        callback = function () coroutine.resume(co) end
+        putline_callbacks[co] = callback
+    end
+    lib.writeline(stream, line, callback)
+    coroutine.yield()
+end
+
+function getline (stream, line)
+    local co = coroutine.running()
+    local callback = getline_callbacks[co]
+    if not callback then
+        callback = function (l) coroutine.resume(co, l) end
+        getline_callbacks[co] = callback
+    end
+    lib.readline(stream, callback)
+    local line = coroutine.yield()
+    return line
+end
+
+run(function ()
+    local t = {}
+    local inp = io.input()
+    local out = io.output()
+
+    while true do
+        local line = getline(inp)
+        if not line then break end
+        t[#t + 1] = line
+    end
+
+    for i = #t, 1, -1 do
+        putline(out, t[i] .. "\n")
+    end    
+end)
+```
+
 练习 24.6
+
+```lua
+-- RUN_P246_DEMO=1 lua Sec24/p246.lua
+
+-- Minimal coroutine scheduler with transfer semantics (resume/yield mediated)
+
+local Scheduler = {}
+Scheduler.__index = Scheduler
+
+function Scheduler.new()
+  return setmetatable({ current = nil }, Scheduler)
+end
+
+-- Run starting from an entry coroutine. It continues following transfer hops
+-- until the current coroutine returns or yields something other than a transfer.
+function Scheduler:run(entry, ...)
+  local nextCoroutine = assert(entry, "entry coroutine required")
+  local args = { ... }
+
+  while nextCoroutine do
+    self.current = nextCoroutine
+
+    if coroutine.status(nextCoroutine) == "dead" then
+      return
+    end
+
+    local ok, yielded = coroutine.resume(nextCoroutine, table.unpack(args))
+    if not ok then
+      error(yielded, 0)
+    end
+
+    if coroutine.status(nextCoroutine) == "dead" then
+      return
+    end
+
+    if type(yielded) == "table" and yielded.op == "transfer" then
+      local target = yielded.target
+      assert(type(target) == "thread", "transfer target must be a coroutine (thread)")
+      assert(coroutine.status(target) ~= "dead", "cannot transfer to a dead coroutine")
+      nextCoroutine = target
+      args = yielded.args or {}
+    else
+      -- Any non-transfer yield stops the scheduler (simple demo policy)
+      return
+    end
+  end
+end
+
+function Scheduler:transfer(target, ...)
+  -- Yield a transfer request to the scheduler. When this coroutine is
+  -- later resumed, the values passed to resume become our return values.
+  return coroutine.yield({ op = "transfer", target = target, args = { ... } })
+end
+
+local scheduler = Scheduler.new()
+
+local function spawn(fn)
+  assert(type(fn) == "function", "spawn expects a function")
+  return coroutine.create(fn)
+end
+
+-- transfer(target, ...): suspend the current coroutine and switch to target.
+-- When some coroutine transfers back to this one, returned values will be
+-- whatever that transfer provided to resume this coroutine.
+local function transfer(target, ...)
+  assert(coroutine.running(), "transfer must be called inside a coroutine")
+  local results = { scheduler:transfer(target, ...) }
+  return table.unpack(results)
+end
+
+local function demo()
+  local coA, coB
+
+  coA = spawn(function()
+    print("A: start")
+    local r1 = transfer(coB, "msg-from-A1")
+    print("A: back, got", r1)
+    local r2 = transfer(coB, "msg-from-A2")
+    print("A: back again, got", r2)
+    print("A: done")
+  end)
+
+  coB = spawn(function(x)
+    print("B: got", x)
+    transfer(coA, "reply-from-B1")
+    print("B: resumed")
+    transfer(coA, "reply-from-B2")
+    -- At this point B is suspended until someone transfers back to it.
+  end)
+
+  scheduler:run(coA)
+end
+
+if os.getenv("RUN_P246_DEMO") == "1" then
+  demo()
+end
+```
